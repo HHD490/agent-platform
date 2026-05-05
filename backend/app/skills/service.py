@@ -1,5 +1,6 @@
 import json
 import logging
+import posixpath
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -10,6 +11,11 @@ from azure.storage.blob import (
     BlobServiceClient,
     ContainerClient,
     generate_blob_sas,
+)
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
 )
 
 from app.core import blob_layout
@@ -44,8 +50,17 @@ class BlobStorageService:
     def _skill_prefix(self, tenant_id: str, skill_name: str) -> str:
         return blob_layout.artifact_prefix(tenant_id, _SKILL_HUB, skill_name)
 
+    @staticmethod
+    def _validate_file_path(file_path: str) -> str:
+        """Normalize and validate a file path, rejecting directory traversal."""
+        normalized = posixpath.normpath(file_path)
+        if normalized.startswith("..") or posixpath.isabs(normalized):
+            raise ValueError(f"Invalid file path: {file_path}")
+        return normalized
+
     def _blob_path(self, tenant_id: str, skill_name: str, file_path: str) -> str:
-        return blob_layout.file_path(tenant_id, _SKILL_HUB, skill_name, file_path)
+        safe_path = self._validate_file_path(file_path)
+        return blob_layout.file_path(tenant_id, _SKILL_HUB, skill_name, safe_path)
 
     def list_skills(self, tenant_id: str) -> list[dict]:
         prefix = self._tenant_prefix(tenant_id)
@@ -230,10 +245,12 @@ class BlobStorageService:
     # Generic JSON-blob helpers used by non-skill hubs (MCP Hub today; future
     # Prompt/Agent Hubs will follow the same pattern). Intentionally tenant-
     # agnostic — callers compose the full path including tenant prefix.
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     def write_json(self, path: str, data: dict) -> None:
         payload = json.dumps(data).encode("utf-8")
         self.container_client.get_blob_client(path).upload_blob(payload, overwrite=True)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     def read_json(self, path: str) -> dict | None:
         try:
             raw = self.container_client.get_blob_client(path).download_blob().readall()
@@ -244,9 +261,11 @@ class BlobStorageService:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     def list_names(self, prefix: str) -> list[str]:
         return [b.name for b in self.container_client.list_blobs(name_starts_with=prefix)]
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     def exists(self, path: str) -> bool:
         try:
             self.container_client.get_blob_client(path).get_blob_properties()
@@ -254,6 +273,7 @@ class BlobStorageService:
         except Exception:
             return False
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
     def delete(self, path: str) -> None:
         self.container_client.get_blob_client(path).delete_blob()
 

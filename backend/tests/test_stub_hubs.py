@@ -1,28 +1,63 @@
-"""Smoke tests for the Coming Soon stub hubs.
+"""Smoke tests for hubs that graduated from 501 stubs to real CRUD.
 
-Slice 2 (#4) shipped MCP, Prompt, and Agent hubs as 501 stubs with a stable
-JSON contract. The MCP row graduated to real CRUD in #15; Prompt and Agent
-remain stubs and are pinned here.
+Prompts and Agents graduated in M2. These verify the routers return real
+responses (200/201) instead of 501 Coming Soon.
 """
 
-EXPECTED_TRACKING_URL = "https://github.com/carvychen/agent-platform/issues/1"
+from app.core.auth.dependencies import get_current_user
+from app.core.main import app
+from tests.conftest import AUTH, InMemoryStore, make_admin
 
 
-def _assert_coming_soon(response, expected_module: str) -> None:
-    assert response.status_code == 501
-    body = response.json()
-    assert set(body.keys()) == {"status_code", "module", "detail", "tracking"}
-    assert body["status_code"] == 501
-    assert body["module"] == expected_module
-    assert isinstance(body["detail"], str) and body["detail"]
-    assert body["tracking"] == EXPECTED_TRACKING_URL
+def test_prompts_hub_is_live(client):
+    from app.prompts.router import get_prompt_service
+    from app.prompts.service import PromptService
+
+    store = InMemoryStore()
+    svc = PromptService(store=store)
+    app.dependency_overrides[get_current_user] = lambda: make_admin()
+    app.dependency_overrides[get_prompt_service] = lambda: svc
+    try:
+        resp = client.get("/api/prompts", headers=AUTH)
+        assert resp.status_code == 200, f"expected 200, got {resp.status_code}"
+        assert resp.json() == {"prompts": []}
+
+        resp = client.post("/api/prompts", json={
+            "name": "test-prompt",
+            "description": "A test prompt",
+            "content": "# Hello\n\nThis is a test.",
+        }, headers=AUTH)
+        assert resp.status_code == 201, resp.text
+        doc = resp.json()
+        assert doc["name"] == "test-prompt"
+        assert doc["content"] == "# Hello\n\nThis is a test."
+    finally:
+        app.dependency_overrides.clear()
 
 
-def test_prompts_hub_returns_coming_soon(client):
-    response = client.get("/api/prompts")
-    _assert_coming_soon(response, expected_module="prompts")
+def test_agents_hub_is_live(client):
+    from app.agents.router import get_agent_service
+    from app.agents.service import AgentService
 
+    store = InMemoryStore()
+    svc = AgentService(store=store)
+    app.dependency_overrides[get_current_user] = lambda: make_admin()
+    app.dependency_overrides[get_agent_service] = lambda: svc
+    try:
+        resp = client.get("/api/agents", headers=AUTH)
+        assert resp.status_code == 200, f"expected 200, got {resp.status_code}"
+        assert resp.json() == {"agents": []}
 
-def test_agents_hub_returns_coming_soon(client):
-    response = client.get("/api/agents")
-    _assert_coming_soon(response, expected_module="agents")
+        resp = client.post("/api/agents", json={
+            "name": "test-agent",
+            "description": "A test agent",
+            "model": "gpt-4o",
+            "skill_names": ["crm-opportunity"],
+            "mcp_names": ["crm-mcp"],
+        }, headers=AUTH)
+        assert resp.status_code == 201, resp.text
+        doc = resp.json()
+        assert doc["name"] == "test-agent"
+        assert doc["skill_names"] == ["crm-opportunity"]
+    finally:
+        app.dependency_overrides.clear()

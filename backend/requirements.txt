@@ -8,3 +8,4 @@ python-multipart==0.0.12
 pydantic-settings==2.6.0
 pyyaml==6.0.2
 python-dotenv==1.0.1
+tenacity==8.5.0

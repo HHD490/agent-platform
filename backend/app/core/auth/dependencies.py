@@ -1,15 +1,19 @@
+import time
 from dataclasses import dataclass, field
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 import httpx
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 
 security = HTTPBearer()
 
 _jwks_cache: dict | None = None
+_jwks_cache_ts: float = 0
+_JWKS_CACHE_TTL = 24 * 60 * 60  # 24 hours
 
 ROLE_SKILL_ADMIN = "SkillAdmin"
 ROLE_SKILL_USER = "SkillUser"
@@ -24,20 +28,27 @@ class UserInfo:
     roles: list[str] = field(default_factory=list)
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+async def _fetch_jwks_raw(jwks_url: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(jwks_url)
+        resp.raise_for_status()
+        return resp.json()
+
+
 async def _get_jwks() -> dict:
-    global _jwks_cache
-    if _jwks_cache is not None:
+    global _jwks_cache, _jwks_cache_ts
+    now = time.time()
+    if _jwks_cache is not None and (now - _jwks_cache_ts) < _JWKS_CACHE_TTL:
         return _jwks_cache
 
     jwks_url = (
         f"https://login.microsoftonline.com/{settings.azure_ad_tenant_id}"
         f"/discovery/v2.0/keys"
     )
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(jwks_url)
-        resp.raise_for_status()
-        _jwks_cache = resp.json()
-        return _jwks_cache
+    _jwks_cache = await _fetch_jwks_raw(jwks_url)
+    _jwks_cache_ts = now
+    return _jwks_cache
 
 
 async def get_current_user(

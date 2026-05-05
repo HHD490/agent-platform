@@ -10,8 +10,8 @@ class SkillCreateRequest(BaseModel):
 
 
 class FileWriteRequest(BaseModel):
-    content: str
+    content: str = Field(..., max_length=1_048_576)  # 1 MB
 
 
 class FileRenameRequest(BaseModel):
-    new_path: str = Field(..., min_length=1)
+    new_path: str = Field(..., min_length=1, max_length=1024)

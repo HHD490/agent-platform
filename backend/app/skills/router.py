@@ -19,6 +19,17 @@ MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB per file
 MAX_FILE_COUNT = 100
 RESERVED_SKILL_NAMES = {"import", "new", "search"}
 
+
+def _check_file_path(file_path: str) -> str:
+    """Validate a file path, rejecting directory traversal attempts."""
+    normalized = posixpath.normpath(file_path)
+    if normalized.startswith("..") or posixpath.isabs(normalized):
+        raise HTTPException(status_code=400, detail=f"Invalid file path: {file_path}")
+    if not normalized:
+        raise HTTPException(status_code=400, detail="File path must not be empty")
+    return normalized
+
+
 _blob_service: BlobStorageService | None = None
 
 
@@ -181,6 +192,7 @@ def read_file(
     user: UserInfo = Depends(require_any_role),
     blob: BlobStorageService = Depends(get_blob_service),
 ):
+    _check_file_path(file_path)
     content = blob.read_file(user.tenant_id, name, file_path)
     if content is None:
         raise HTTPException(status_code=404, detail=f"File '{file_path}' not found")
@@ -294,6 +306,9 @@ def create_skill(
     user: UserInfo = Depends(require_admin),
     blob: BlobStorageService = Depends(get_blob_service),
 ):
+    if req.name in RESERVED_SKILL_NAMES:
+        raise HTTPException(status_code=422, detail=f"Skill name '{req.name}' is reserved")
+
     name_errors = validate_skill_name(req.name)
     if name_errors:
         raise HTTPException(status_code=422, detail=name_errors)
@@ -322,6 +337,9 @@ async def import_skill(
         raise HTTPException(status_code=422, detail="ZIP file exceeds 10 MB limit")
 
     files, skill_name = _extract_and_validate_zip(data)
+
+    if skill_name in RESERVED_SKILL_NAMES:
+        raise HTTPException(status_code=422, detail=f"Skill name '{skill_name}' is reserved")
 
     existing = blob.get_skill(user.tenant_id, skill_name)
     if existing and not overwrite:
@@ -361,6 +379,7 @@ def write_file(
     user: UserInfo = Depends(require_admin),
     blob: BlobStorageService = Depends(get_blob_service),
 ):
+    _check_file_path(file_path)
     skill = blob.get_skill(user.tenant_id, name)
     if not skill:
         raise HTTPException(status_code=404, detail=f"Skill '{name}' not found")
@@ -375,6 +394,7 @@ def delete_file(
     user: UserInfo = Depends(require_admin),
     blob: BlobStorageService = Depends(get_blob_service),
 ):
+    _check_file_path(file_path)
     blob.delete_file(user.tenant_id, name, file_path)
 
 
@@ -386,6 +406,8 @@ def rename_file(
     user: UserInfo = Depends(require_admin),
     blob: BlobStorageService = Depends(get_blob_service),
 ):
+    _check_file_path(file_path)
+    _check_file_path(req.new_path)
     content = blob.read_file(user.tenant_id, name, file_path)
     if content is None:
         raise HTTPException(status_code=404, detail=f"File '{file_path}' not found")
@@ -402,4 +424,5 @@ def delete_folder(
     blob: BlobStorageService = Depends(get_blob_service),
 ):
     """Delete all files under a folder prefix."""
+    _check_file_path(folder_path)
     blob.delete_folder(user.tenant_id, name, folder_path)
